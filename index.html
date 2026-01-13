@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Grid: Fire Edition</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root { 
+            --bg: #0a0200; 
+            --fire-red: #ff3300; 
+            --fire-orange: #ff9900; 
+            --fire-yellow: #ffee00;
+        }
+        body { margin: 0; background: var(--bg); color: #fff; font-family: 'Orbitron', sans-serif; overflow: hidden; touch-action: none; }
+        
+        #ui-layer { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 100; pointer-events: none; }
+        .panel { 
+            background: rgba(15, 5, 0, 0.95); 
+            border: 3px solid var(--fire-red); 
+            padding: 30px; 
+            border-radius: 20px; 
+            text-align: center; 
+            pointer-events: auto; 
+            width: 85vw; 
+            max-width: 380px; 
+            box-shadow: 0 0 50px rgba(255, 50, 0, 0.4); 
+        }
+
+        button { 
+            width: 100%; padding: 15px; margin: 8px 0; 
+            background: linear-gradient(45deg, #441100, #220000); 
+            border: 2px solid var(--fire-orange); 
+            color: var(--fire-yellow); cursor: pointer; 
+            font-family: 'Orbitron'; font-size: 0.9rem; 
+            border-radius: 8px; font-weight: bold; 
+            text-transform: uppercase;
+        }
+        button:active { background: var(--fire-red); color: #fff; transform: scale(0.95); }
+        
+        input { 
+            width: 100%; padding: 15px; margin-bottom: 10px; 
+            background: #200; border: 2px solid #510; color: #fff; 
+            text-align: center; font-family: 'Orbitron'; 
+            border-radius: 10px; box-sizing: border-box; 
+        }
+
+        #hud { 
+            position: absolute; top: 20px; left: 50%; transform: translateX(-50%); 
+            background: rgba(0,0,0,0.85); padding: 10px 25px; 
+            border-radius: 40px; border: 2px solid var(--fire-red); 
+            z-index: 50; display: flex; gap: 20px; align-items: center;
+        }
+
+        .side-btns { position: absolute; bottom: 20px; right: 20px; z-index: 60; display: flex; flex-direction: column; gap: 10px; }
+        .mini-btn { background: #200; border: 1px solid var(--fire-orange); color: #fff; padding: 10px; cursor: pointer; border-radius: 8px; font-size: 0.7rem; }
+
+        .hidden { display: none !important; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+
+    <div id="hud" class="hidden">
+        <div id="status">TURN: <span id="turn-display" style="color:var(--fire-yellow)">X</span></div>
+        <button onclick="requestRestart()" style="width: auto; padding: 5px 15px; margin: 0; font-size: 0.7rem;">RESTART</button>
+    </div>
+
+    <div id="ui-layer">
+        <div id="menu-main" class="panel">
+            <h1 style="color: var(--fire-red); letter-spacing: 5px;">INFERNO GRID</h1>
+            <button onclick="showPanel('menu-diff')">SOLO VS AI</button>
+            <button onclick="showPanel('menu-online')">MULTIPLAYER</button>
+        </div>
+
+        <div id="menu-diff" class="panel hidden">
+            <h3 style="color: var(--fire-orange);">DIFFICULTY</h3>
+            <button onclick="startGame('AI', 'easy')">EMBER</button>
+            <button onclick="startGame('AI', 'medium')">BLAZE</button>
+            <button onclick="startGame('AI', 'hard')">SUPERNOVA</button>
+            <button style="border-color:#444;" onclick="showPanel('menu-main')">BACK</button>
+        </div>
+
+        <div id="menu-online" class="panel hidden">
+            <button onclick="hostNode()">CREATE NODE</button>
+            <input type="text" id="node-input" placeholder="PASTE NODE ID">
+            <button onclick="joinNode()">JOIN NODE</button>
+            <button style="border-color:#444;" onclick="showPanel('menu-main')">BACK</button>
+        </div>
+
+        <div id="menu-wait" class="panel hidden">
+            <p style="color: var(--fire-yellow);">NODE CREATED</p>
+            <p id="node-id-display" style="font-size: 0.7rem; word-break: break-all;"></p>
+            <p style="font-size: 0.6rem;">ID Copied to clipboard.</p>
+        </div>
+
+        <div id="menu-restart-ask" class="panel hidden">
+            <p>Opponent wants a RESTART.</p>
+            <button onclick="acceptRestart()">ACCEPT</button>
+            <button onclick="showPanel('none')" style="border-color:#444;">DECLINE</button>
+        </div>
+
+        <div id="menu-post" class="panel hidden">
+            <h2 id="win-message">X ASCENDS</h2>
+            <button onclick="startReplay()">WATCH REPLAY</button>
+            <button onclick="location.reload()">MAIN MENU</button>
+        </div>
+    </div>
+
+    <div class="side-btns">
+        <div class="mini-btn" onclick="resetCam()">⌖ RESET CAM</div>
+        <div class="mini-btn" onclick="toggleSettings()">⚙ SETTINGS</div>
+    </div>
+
+    <div id="settings-panel" class="panel hidden" style="position: absolute; bottom: 70px; right: 20px; width: auto;">
+        <label><input type="checkbox" id="zoom-toggle" checked> AUTO-ZOOM</label>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+/** --- CORE ENGINE --- **/
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const GRID_SIZE = 100;
+const CELL = 75;
+
+let board = [], replayHistory = [], gameActive = false, isReplaying = false;
+let mode = '', difficulty = 'hard', turn = 'X', localPlayer = 'X';
+let cam = { x: 0, y: 0, zoom: 0.5 }, winLine = null, peer, conn, autoZoom = true;
+let lastTouch = { x: 0, y: 0 };
+
+function init() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    centerCam();
+}
+function centerCam() {
+    cam.x = canvas.width / 2 - (50 * CELL * cam.zoom);
+    cam.y = canvas.height / 2 - (50 * CELL * cam.zoom);
+}
+window.addEventListener('resize', init);
+init();
+
+/** --- INPUT LOGIC --- **/
+let initialDist = 0, initialZoom = 0, isPanning = false, lastPan = { x: 0, y: 0 };
+
+canvas.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+        initialDist = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+        initialZoom = cam.zoom;
+        disableAutoZoom();
+    } else {
+        isPanning = true;
+        lastPan = { x: e.touches[0].clientX - cam.x, y: e.touches[0].clientY - cam.y };
+        lastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (e.touches.length === 2) {
+        const dist = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+        cam.zoom = Math.min(Math.max(initialZoom * (dist / initialDist), 0.1), 3.0);
+    } else if (isPanning) {
+        cam.x = e.touches[0].clientX - lastPan.x;
+        cam.y = e.touches[0].clientY - lastPan.y;
+        disableAutoZoom();
+    }
+}, { passive: false });
+
+canvas.addEventListener('touchend', (e) => {
+    if (e.touches.length === 0 && isPanning && !initialDist) handleInteraction(e);
+    isPanning = false; initialDist = 0;
+});
+
+canvas.addEventListener('wheel', (e) => {
+    e.preventDefault(); disableAutoZoom();
+    const oldZ = cam.zoom;
+    cam.zoom = Math.min(Math.max(cam.zoom - e.deltaY * 0.001, 0.1), 3.0);
+    cam.x -= (e.clientX - cam.x) * (cam.zoom / oldZ - 1);
+    cam.y -= (e.clientY - cam.y) * (cam.zoom / oldZ - 1);
+}, { passive: false });
+
+canvas.addEventListener('mousedown', (e) => { if(e.button === 0) handleInteraction(e); });
+canvas.addEventListener('mousemove', (e) => { lastTouch = {x: e.clientX, y: e.clientY}; });
+
+function handleInteraction(e) {
+    if (!gameActive || isReplaying) return;
+    if (mode === 'ONLINE' && turn !== localPlayer) return;
+    if (mode === 'AI' && turn === 'O') return;
+    const gx = Math.floor(((lastTouch.x - cam.x) / cam.zoom) / CELL);
+    const gy = Math.floor(((lastTouch.y - cam.y) / cam.zoom) / CELL);
+    if (gx < 0 || gy < 0 || gx >= GRID_SIZE || gy >= GRID_SIZE || board.some(b => b.x === gx && b.y === gy)) return;
+    executeMove(gx, gy, turn);
+    if (mode === 'ONLINE' && conn) conn.send({type:'MOVE', x:gx, y:gy, p:localPlayer});
+}
+
+/** --- RESTART LOGIC --- **/
+function requestRestart() {
+    if (mode === 'AI') { resetGame(); }
+    else if (conn) { conn.send({type: 'RESTART_REQ'}); alert("Restart request sent..."); }
+}
+function acceptRestart() {
+    if (conn) conn.send({type: 'RESTART_OK'});
+    resetGame();
+}
+function resetGame() {
+    board = []; replayHistory = []; winLine = null; turn = 'X'; gameActive = true;
+    document.getElementById('turn-display').innerText = 'X';
+    showPanel('none');
+}
+
+/** --- SYSTEM --- **/
+function executeMove(gx, gy, p) {
+    board.push({ x: gx, y: gy, p: p, scale: 0 });
+    replayHistory.push({ x: gx, y: gy, p: p });
+    const win = checkWin(p);
+    if (win) {
+        winLine = win; gameActive = false;
+        document.getElementById('win-message').innerText = p + " ASCENDS";
+        setTimeout(() => showPanel('menu-post'), 1500);
+    } else {
+        turn = (turn === 'X') ? 'O' : 'X';
+        document.getElementById('turn-display').innerText = turn;
+        if (mode === 'AI' && turn === 'O') setTimeout(aiMove, 600);
+    }
+}
+
+function checkWin(p) {
+    const pts = board.filter(m => m.p === p);
+    for (let m of pts) {
+        for (let [dx, dy] of [[1,0],[0,1],[1,1],[1,-1]]) {
+            let line = [m];
+            for (let i=1; i<5; i++) {
+                let f = pts.find(pt => pt.x === m.x+dx*i && pt.y === m.y+dy*i);
+                if (f) line.push(f); else break;
+            }
+            if (line.length >= 5) return { x1: line[0].x, y1: line[0].y, x2: line[4].x, y2: line[4].y };
+        }
+    }
+    return null;
+}
+
+/** --- AI & DRAW (Condensed for brevity) --- **/
+function aiMove() {
+    if (!gameActive) return;
+    let spots = [];
+    board.forEach(m => { for(let i=-2; i<=2; i++) for(let j=-2; j<=2; j++) {
+        let tx = m.x+i, ty = m.y+j;
+        if(tx>=0 && tx<GRID_SIZE && ty>=0 && ty<GRID_SIZE && !board.some(b=>b.x===tx&&b.y===ty)) {
+            if(!spots.some(s=>s.x===tx&&s.y===ty)) spots.push({x:tx, y:ty});
+        }
+    }});
+    if (spots.length === 0) spots.push({x:50,y:50});
+    let best = spots[0], maxS = -Infinity;
+    spots.forEach(s => {
+        let score = evalS(s.x, s.y, 'O') + (evalS(s.x, s.y, 'X') * (difficulty === 'hard' ? 1.7 : 0.9));
+        if (score > maxS) { maxS = score; best = s; }
+    });
+    executeMove(best.x, best.y, 'O');
+}
+function evalS(x, y, p) {
+    let score = 0;
+    [[1,0],[0,1],[1,1],[1,-1]].forEach(([dx, dy]) => {
+        let count = 1;
+        for(let i=1; i<5; i++) if(board.some(m=>m.x===x+dx*i && m.y===y+dy*i && m.p===p)) count++; else break;
+        for(let i=1; i<5; i++) if(board.some(m=>m.x===x-dx*i && m.y===y-dy*i && m.p===p)) count++; else break;
+        if(count >= 5) score += 10000; else if(count === 4) score += 1000; else score += count * 5;
+    });
+    return score;
+}
+
+function draw() {
+    ctx.fillStyle = '#0a0200'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (autoZoom && board.length > 0) applyAutoZoom();
+    ctx.save(); ctx.translate(cam.x, cam.y); ctx.scale(cam.zoom, cam.zoom);
+    ctx.strokeStyle = '#310'; ctx.beginPath();
+    for(let i=0; i<=GRID_SIZE; i+=10) { ctx.moveTo(i*CELL, 0); ctx.lineTo(i*CELL, GRID_SIZE*CELL); ctx.moveTo(0, i*CELL); ctx.lineTo(GRID_SIZE*CELL, i*CELL); }
+    ctx.stroke();
+    board.forEach(m => {
+        if(m.scale < 1) m.scale += 0.15;
+        ctx.save(); ctx.translate(m.x*CELL+CELL/2, m.y*CELL+CELL/2); ctx.scale(m.scale, m.scale);
+        ctx.strokeStyle = (m.p === 'X' ? '#fff' : '#ff9900'); ctx.shadowBlur = 15; ctx.shadowColor = (m.p === 'X' ? '#f30' : '#fa0');
+        ctx.lineWidth = 12; ctx.beginPath();
+        if(m.p === 'X') { ctx.moveTo(-20,-20); ctx.lineTo(20,20); ctx.moveTo(20,-20); ctx.lineTo(-20,20); }
+        else { ctx.arc(0,0,20,0,Math.PI*2); }
+        ctx.stroke(); ctx.restore();
+    });
+    if (winLine) {
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 15; ctx.shadowBlur = 30; ctx.shadowColor = '#ff0';
+        ctx.beginPath(); ctx.moveTo(winLine.x1*CELL+CELL/2, winLine.y1*CELL+CELL/2); ctx.lineTo(winLine.x2*CELL+CELL/2, winLine.y2*CELL+CELL/2); ctx.stroke();
+    }
+    ctx.restore(); requestAnimationFrame(draw);
+}
+
+function applyAutoZoom() {
+    let minX = Math.min(...board.map(m=>m.x)), maxX = Math.max(...board.map(m=>m.x));
+    let minY = Math.min(...board.map(m=>m.y)), maxY = Math.max(...board.map(m=>m.y));
+    const targetZ = Math.min(canvas.width / ((maxX-minX+5)*CELL), canvas.height / ((maxY-minY+5)*CELL), 1.0);
+    cam.zoom += (targetZ - cam.zoom) * 0.05;
+    cam.x += (canvas.width/2 - ((minX+maxX+1)/2*CELL)*cam.zoom - cam.x) * 0.05;
+    cam.y += (canvas.height/2 - ((minY+maxY+1)/2*CELL)*cam.zoom - cam.y) * 0.05;
+}
+
+function startReplay() {
+    isReplaying = true; board = []; winLine = null; showPanel('none');
+    let i = 0; let timer = setInterval(() => {
+        if (i >= replayHistory.length) { clearInterval(timer); isReplaying = false; showPanel('menu-post'); return; }
+        board.push({...replayHistory[i], scale: 0}); i++;
+    }, 300);
+}
+
+/** --- MULTIPLAYER SETUP --- **/
+function handleData(d) {
+    if(d.type === 'MOVE') executeMove(d.x, d.y, d.p);
+    if(d.type === 'RESTART_REQ') showPanel('menu-restart-ask');
+    if(d.type === 'RESTART_OK') resetGame();
+}
+function hostNode() {
+    peer = new Peer(); peer.on('open', id => { document.getElementById('node-id-display').innerText = id; navigator.clipboard.writeText(id); showPanel('menu-wait'); });
+    peer.on('connection', c => { conn = c; mode = 'ONLINE'; localPlayer = 'X'; conn.on('data', handleData); startGame('ONLINE', 'hard'); });
+}
+function joinNode() {
+    const id = document.getElementById('node-input').value; if(!id) return;
+    peer = new Peer(); peer.on('open', () => { conn = peer.connect(id); mode = 'ONLINE'; localPlayer = 'O'; conn.on('data', handleData); startGame('ONLINE', 'hard'); });
+}
+
+function resetCam() { autoZoom = true; document.getElementById('zoom-toggle').checked = true; centerCam(); }
+function showPanel(id) { document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden')); if(id!=='none') document.getElementById(id).classList.remove('hidden'); }
+function startGame(m, d) { mode = m; difficulty = d; showPanel('none'); document.getElementById('ui-layer').classList.add('hidden'); document.getElementById('hud').classList.remove('hidden'); gameActive = true; draw(); }
+function toggleSettings() { document.getElementById('settings-panel').classList.toggle('hidden'); }
+function disableAutoZoom() { autoZoom = false; document.getElementById('zoom-toggle').checked = false; }
+document.getElementById('zoom-toggle').onchange = (e) => autoZoom = e.target.checked;
+</script>
+</body>
+</html>
