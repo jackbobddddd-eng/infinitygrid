@@ -56,6 +56,11 @@
         .side-btns { position: absolute; bottom: 20px; right: 20px; z-index: 60; display: flex; flex-direction: column; gap: 10px; }
         .mini-btn { background: #200; border: 1px solid var(--fire-orange); color: #fff; padding: 10px; cursor: pointer; border-radius: 8px; font-size: 0.7rem; }
 
+        /* Waiting Screen Animations */
+        .loader-bar { width: 100%; height: 4px; background: #300; margin: 20px 0; overflow: hidden; border-radius: 2px; }
+        .loader-progress { width: 40%; height: 100%; background: var(--fire-red); animation: slide 1.5s infinite ease-in-out; box-shadow: 0 0 10px var(--fire-red); }
+        @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+
         .hidden { display: none !important; }
         canvas { display: block; }
     </style>
@@ -90,9 +95,12 @@
         </div>
 
         <div id="menu-wait" class="panel hidden">
-            <p style="color: var(--fire-yellow);">NODE CREATED</p>
-            <p id="node-id-display" style="font-size: 0.7rem; word-break: break-all;"></p>
-            <p style="font-size: 0.6rem;">ID Copied to clipboard.</p>
+            <h2 style="color: var(--fire-red); margin: 0;">WAITING...</h2>
+            <div class="loader-bar"><div class="loader-progress"></div></div>
+            <p style="font-size: 0.8rem; color: #888;">SHARE THIS ID WITH PLAYER O:</p>
+            <div id="node-id-display" style="background: #110000; padding: 10px; border: 1px dashed var(--fire-orange); color: var(--fire-yellow); font-size: 0.9rem; word-break: break-all; margin-bottom: 10px;">GENERATING...</div>
+            <button id="copy-btn" onclick="copyID()" style="font-size: 0.7rem; border-color: #555;">COPY ID</button>
+            <button onclick="location.reload()" style="border-color: #444; color: #666; font-size: 0.7rem;">CANCEL</button>
         </div>
 
         <div id="menu-restart-ask" class="panel hidden">
@@ -143,7 +151,7 @@ function centerCam() {
 window.addEventListener('resize', init);
 init();
 
-/** --- INPUT LOGIC --- **/
+/** --- INPUT LOGIC (MAC & IPAD) --- **/
 let initialDist = 0, initialZoom = 0, isPanning = false, lastPan = { x: 0, y: 0 };
 
 canvas.addEventListener('touchstart', (e) => {
@@ -197,21 +205,6 @@ function handleInteraction(e) {
     if (mode === 'ONLINE' && conn) conn.send({type:'MOVE', x:gx, y:gy, p:localPlayer});
 }
 
-/** --- RESTART LOGIC --- **/
-function requestRestart() {
-    if (mode === 'AI') { resetGame(); }
-    else if (conn) { conn.send({type: 'RESTART_REQ'}); alert("Restart request sent..."); }
-}
-function acceptRestart() {
-    if (conn) conn.send({type: 'RESTART_OK'});
-    resetGame();
-}
-function resetGame() {
-    board = []; replayHistory = []; winLine = null; turn = 'X'; gameActive = true;
-    document.getElementById('turn-display').innerText = 'X';
-    showPanel('none');
-}
-
 /** --- SYSTEM --- **/
 function executeMove(gx, gy, p) {
     board.push({ x: gx, y: gy, p: p, scale: 0 });
@@ -243,33 +236,54 @@ function checkWin(p) {
     return null;
 }
 
-/** --- AI & DRAW (Condensed for brevity) --- **/
-function aiMove() {
-    if (!gameActive) return;
-    let spots = [];
-    board.forEach(m => { for(let i=-2; i<=2; i++) for(let j=-2; j<=2; j++) {
-        let tx = m.x+i, ty = m.y+j;
-        if(tx>=0 && tx<GRID_SIZE && ty>=0 && ty<GRID_SIZE && !board.some(b=>b.x===tx&&b.y===ty)) {
-            if(!spots.some(s=>s.x===tx&&s.y===ty)) spots.push({x:tx, y:ty});
-        }
-    }});
-    if (spots.length === 0) spots.push({x:50,y:50});
-    let best = spots[0], maxS = -Infinity;
-    spots.forEach(s => {
-        let score = evalS(s.x, s.y, 'O') + (evalS(s.x, s.y, 'X') * (difficulty === 'hard' ? 1.7 : 0.9));
-        if (score > maxS) { maxS = score; best = s; }
+/** --- MULTIPLAYER CORE --- **/
+function hostNode() {
+    showPanel('menu-wait');
+    peer = new Peer();
+    peer.on('open', id => {
+        document.getElementById('node-id-display').innerText = id;
+        navigator.clipboard.writeText(id).catch(() => {}); // Attempt auto-copy
     });
-    executeMove(best.x, best.y, 'O');
+    peer.on('connection', c => {
+        conn = c; mode = 'ONLINE'; localPlayer = 'X';
+        conn.on('data', handleData);
+        startGame('ONLINE', 'hard');
+    });
 }
-function evalS(x, y, p) {
-    let score = 0;
-    [[1,0],[0,1],[1,1],[1,-1]].forEach(([dx, dy]) => {
-        let count = 1;
-        for(let i=1; i<5; i++) if(board.some(m=>m.x===x+dx*i && m.y===y+dy*i && m.p===p)) count++; else break;
-        for(let i=1; i<5; i++) if(board.some(m=>m.x===x-dx*i && m.y===y-dy*i && m.p===p)) count++; else break;
-        if(count >= 5) score += 10000; else if(count === 4) score += 1000; else score += count * 5;
+
+function joinNode() {
+    const id = document.getElementById('node-input').value; if(!id) return;
+    peer = new Peer();
+    peer.on('open', () => {
+        conn = peer.connect(id); mode = 'ONLINE'; localPlayer = 'O';
+        conn.on('data', handleData);
+        startGame('ONLINE', 'hard');
     });
-    return score;
+}
+
+function handleData(d) {
+    if(d.type === 'MOVE') executeMove(d.x, d.y, d.p);
+    if(d.type === 'RESTART_REQ') showPanel('menu-restart-ask');
+    if(d.type === 'RESTART_OK') resetGame();
+}
+
+function copyID() {
+    const id = document.getElementById('node-id-display').innerText;
+    navigator.clipboard.writeText(id);
+    document.getElementById('copy-btn').innerText = "COPIED!";
+    setTimeout(() => document.getElementById('copy-btn').innerText = "COPY ID", 2000);
+}
+
+/** --- RESTART & DRAW --- **/
+function requestRestart() {
+    if (mode === 'AI') resetGame();
+    else if (conn) { conn.send({type: 'RESTART_REQ'}); alert("Restart request sent..."); }
+}
+function acceptRestart() { if (conn) conn.send({type: 'RESTART_OK'}); resetGame(); }
+function resetGame() {
+    board = []; replayHistory = []; winLine = null; turn = 'X'; gameActive = true;
+    document.getElementById('turn-display').innerText = 'X';
+    showPanel('none');
 }
 
 function draw() {
@@ -304,27 +318,40 @@ function applyAutoZoom() {
     cam.y += (canvas.height/2 - ((minY+maxY+1)/2*CELL)*cam.zoom - cam.y) * 0.05;
 }
 
+function aiMove() {
+    if (!gameActive) return;
+    let spots = [];
+    board.forEach(m => { for(let i=-2; i<=2; i++) for(let j=-2; j<=2; j++) {
+        let tx = m.x+i, ty = m.y+j;
+        if(tx>=0 && tx<GRID_SIZE && ty>=0 && ty<GRID_SIZE && !board.some(b=>b.x===tx&&b.y===ty)) {
+            if(!spots.some(s=>s.x===tx&&s.y===ty)) spots.push({x:tx, y:ty});
+        }
+    }});
+    if (spots.length === 0) spots.push({x:50,y:50});
+    let best = spots[0], maxS = -Infinity;
+    spots.forEach(s => {
+        let score = evalS(s.x, s.y, 'O') + (evalS(s.x, s.y, 'X') * (difficulty === 'hard' ? 1.7 : 0.9));
+        if (score > maxS) { maxS = score; best = s; }
+    });
+    executeMove(best.x, best.y, 'O');
+}
+function evalS(x, y, p) {
+    let score = 0;
+    [[1,0],[0,1],[1,1],[1,-1]].forEach(([dx, dy]) => {
+        let count = 1;
+        for(let i=1; i<5; i++) if(board.some(m=>m.x===x+dx*i && m.y===y+dy*i && m.p===p)) count++; else break;
+        for(let i=1; i<5; i++) if(board.some(m=>m.x===x-dx*i && m.y===y-dy*i && m.p===p)) count++; else break;
+        if(count >= 5) score += 10000; else if(count === 4) score += 1000; else score += count * 5;
+    });
+    return score;
+}
+
 function startReplay() {
     isReplaying = true; board = []; winLine = null; showPanel('none');
     let i = 0; let timer = setInterval(() => {
         if (i >= replayHistory.length) { clearInterval(timer); isReplaying = false; showPanel('menu-post'); return; }
         board.push({...replayHistory[i], scale: 0}); i++;
     }, 300);
-}
-
-/** --- MULTIPLAYER SETUP --- **/
-function handleData(d) {
-    if(d.type === 'MOVE') executeMove(d.x, d.y, d.p);
-    if(d.type === 'RESTART_REQ') showPanel('menu-restart-ask');
-    if(d.type === 'RESTART_OK') resetGame();
-}
-function hostNode() {
-    peer = new Peer(); peer.on('open', id => { document.getElementById('node-id-display').innerText = id; navigator.clipboard.writeText(id); showPanel('menu-wait'); });
-    peer.on('connection', c => { conn = c; mode = 'ONLINE'; localPlayer = 'X'; conn.on('data', handleData); startGame('ONLINE', 'hard'); });
-}
-function joinNode() {
-    const id = document.getElementById('node-input').value; if(!id) return;
-    peer = new Peer(); peer.on('open', () => { conn = peer.connect(id); mode = 'ONLINE'; localPlayer = 'O'; conn.on('data', handleData); startGame('ONLINE', 'hard'); });
 }
 
 function resetCam() { autoZoom = true; document.getElementById('zoom-toggle').checked = true; centerCam(); }
